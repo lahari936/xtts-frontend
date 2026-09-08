@@ -1,0 +1,4 @@
+coqui-tts==0.25.1
+gradio==5.49.1
+torch==2.5.1
+torchaudio==2.5.1
