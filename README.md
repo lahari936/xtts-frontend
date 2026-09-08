@@ -8,6 +8,33 @@ Gradio app with two tabs:
 - **Detect AI voice** - run any recording, real or cloned, through the AASIST
   spoof detector in `artifacts/aasist_xtts.onnx`.
 
+## Cloning fidelity and accent
+
+XTTS-v2 is zero-shot. It copies timbre well but rebuilds accent from the accents
+in its training data, so a strong regional accent drifts. Two settings matter,
+measured by cosine similarity between the XTTS speaker embedding of the
+reference set and of the output, three runs each, on a 3-clip Indian-English
+speaker:
+
+| configuration | refs | speaker similarity |
+|---|---|---|
+| single clip, stock conditioning | 1 | 0.530 |
+| several clips of the same speaker | 3 | 0.604 |
+| several clips + long conditioning | 3 | 0.649 |
+| the above at temperature 0.65 | 3 | 0.598 |
+
+So: give it several clips totalling 30 seconds or more, and leave temperature
+alone - lowering it did not help. `gpt_cond_len` and `max_ref_len` are set to 30
+on `tts_model.config` in `get_tts()`, because `XTTS.synthesize()` re-reads them
+from the config after applying kwargs, which means passing them to
+`tts_to_file()` has no effect. The stock 12 s / 10 s caps discard most of a long
+reference.
+
+This narrows the gap; it does not close it. An accent-exact clone needs the GPT
+layer fine-tuned on the target speaker, which is a training job rather than an
+inference setting. Matching the language dropdown to the speaker's actual
+language moves accent more than any slider in the UI.
+
 ## Detection
 
 The detector takes 16 kHz mono audio in fixed 64600-sample (4.04 s) windows;

@@ -18,7 +18,7 @@ print("ref written", os.path.getsize(ref))
 
 import app
 
-out, echoed, scores, detail = app.clone(ref, "Hello, this is a smoke test of voice cloning.", "en")
+out, echoed, scores, detail = app.clone(ref, [ref], "Hello, this is a smoke test of voice cloning.", "en", 0.85)
 print("OUT", out, os.path.getsize(out))
 print("ECHO", echoed)
 assert os.path.getsize(out) > 10000, "output audio suspiciously small"

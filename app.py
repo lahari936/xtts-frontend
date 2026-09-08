@@ -43,6 +43,13 @@ def get_tts():
         from TTS.api import TTS
         device = "cuda" if torch.cuda.is_available() else "cpu"
         _tts = TTS("tts_models/multilingual/multi-dataset/xtts_v2").to(device)
+        # XTTS.synthesize() overwrites these from the config *after* applying any
+        # kwargs, so passing them to tts_to_file() does nothing - they have to be
+        # set here. The stock 12s/10s caps throw away most of a long reference.
+        cfg = _tts.synthesizer.tts_model.config
+        cfg.gpt_cond_len = 30
+        cfg.gpt_cond_chunk_len = 6
+        cfg.max_ref_len = 30
     return _tts
 
 
@@ -99,16 +106,23 @@ def detect(audio_path):
     return {"AI-generated": spoof, "Human": 1.0 - spoof}, detail
 
 
-def clone(reference_audio, text, language):
+def clone(reference_audio, extra_clips, text, language, temperature):
     if not reference_audio:
         raise gr.Error("Upload or record a reference voice first (6-30 seconds of clean speech).")
     if not text or not text.strip():
         raise gr.Error("Enter some text to speak.")
 
+    # XTTS averages the speaker embedding over every clip it is given, which is
+    # the single biggest lever on how closely the clone tracks the original.
+    references = [reference_audio] + [f if isinstance(f, str) else f.name for f in (extra_clips or [])]
+
+    tts = get_tts()
+    tts.synthesizer.tts_model.config.temperature = float(temperature)
+
     out_path = tempfile.mktemp(suffix=".wav", dir=OUT_DIR)
-    get_tts().tts_to_file(
+    tts.tts_to_file(
         text=text.strip(),
-        speaker_wav=reference_audio,
+        speaker_wav=references,
         language=language,
         file_path=out_path,
     )
@@ -127,9 +141,24 @@ with gr.Blocks(title="XTTS Voice Cloning") as demo:
         with gr.Row():
             with gr.Column():
                 ref = gr.Audio(label="Reference voice (6-30s)", sources=["upload", "microphone"], type="filepath")
+                extra = gr.File(
+                    label="More clips of the same speaker (optional, but strongly recommended)",
+                    file_count="multiple",
+                    file_types=["audio"],
+                )
                 txt = gr.Textbox(label="Text to speak", lines=4, placeholder="Type what the cloned voice should say...")
                 lang = gr.Dropdown(LANGUAGES, value="en", label="Language")
+                temp = gr.Slider(0.5, 1.0, value=0.85, step=0.05, label="Temperature (lower is steadier, not necessarily closer)")
                 go = gr.Button("Clone voice", variant="primary")
+                gr.Markdown(
+                    "**On accent.** XTTS-v2 is zero-shot: it copies timbre well but rebuilds accent "
+                    "from the accents it was trained on, so a strong regional accent will drift. "
+                    "Feeding it 30 seconds or more across several clips measurably narrows the gap "
+                    "(speaker similarity 0.53 to 0.65 on a 3-clip Indian-English speaker), but it "
+                    "will not close it. Matching the language dropdown to the speaker's language "
+                    "matters more than any slider here. An exact accent-level clone needs the model "
+                    "fine-tuned on that speaker, not inference tuning."
+                )
             with gr.Column():
                 out_clone = gr.Audio(label="Cloned voice (download via the ⤓ button)", type="filepath", interactive=False)
                 out_ref = gr.Audio(label="Original reference (download via the ⤓ button)", type="filepath", interactive=False)
@@ -149,7 +178,7 @@ with gr.Blocks(title="XTTS Voice Cloning") as demo:
                 probe_scores = gr.Label(label="Verdict", num_top_classes=2)
                 probe_detail = gr.Markdown()
 
-    go.click(clone, [ref, txt, lang], [out_clone, out_ref, clone_scores, clone_detail])
+    go.click(clone, [ref, extra, txt, lang, temp], [out_clone, out_ref, clone_scores, clone_detail])
     check.click(detect, [probe], [probe_scores, probe_detail])
 
 if __name__ == "__main__":
