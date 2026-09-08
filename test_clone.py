@@ -17,8 +17,19 @@ with wave.open(ref, "w") as w:
 print("ref written", os.path.getsize(ref))
 
 import app
-out, echoed = app.clone(ref, "Hello, this is a smoke test of voice cloning.", "en")
+
+out, echoed, scores, detail = app.clone(ref, "Hello, this is a smoke test of voice cloning.", "en")
 print("OUT", out, os.path.getsize(out))
 print("ECHO", echoed)
 assert os.path.getsize(out) > 10000, "output audio suspiciously small"
+
+# The detector must score the clone it was just handed, and score the raw
+# reference too, without either path blowing up.
+for label, path in (("clone", out), ("reference", ref)):
+    scores, detail = app.detect(path)
+    spoof = scores["AI-generated"]
+    assert 0.0 <= spoof <= 1.0, f"{label}: spoof probability out of range: {spoof}"
+    assert abs(scores["Human"] + spoof - 1.0) < 1e-6, f"{label}: scores do not sum to 1"
+    print(f"{label}: spoof={spoof:.3f} -> {detail.splitlines()[0]}")
+
 print("SMOKE OK")

@@ -1,15 +1,39 @@
-"""XTTS-v2 voice cloning UI. Upload/record a reference voice, type text, get it spoken in that voice."""
+"""XTTS-v2 voice cloning UI with AASIST spoof detection.
+
+Clone a voice from a short reference clip, and run any clip through the
+AASIST detector to see whether it reads as human or AI-generated.
+"""
+import json
 import os
 import tempfile
 
 import gradio as gr
+import numpy as np
 
 os.environ.setdefault("COQUI_TOS_AGREED", "1")
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+MODEL_PATH = os.environ.get("DETECTOR_MODEL", os.path.join(HERE, "artifacts", "aasist_xtts.onnx"))
+CALIBRATION_PATH = os.environ.get(
+    "DETECTOR_CALIBRATION", os.path.join(HERE, "artifacts", "calibration_xtts.json")
+)
+
+DETECTOR_SR = 16000
+DETECTOR_SAMPLES = 64600  # 4.04 s, the fixed input width the model was exported with
 
 LANGUAGES = ["en", "es", "fr", "de", "it", "pt", "pl", "tr", "ru", "nl",
              "cs", "ar", "zh-cn", "ja", "hu", "ko", "hi"]
 
+OUT_DIR = os.path.join(tempfile.gettempdir(), "xtts_out")
+os.makedirs(OUT_DIR, exist_ok=True)
+
 _tts = None
+_detector = None
+
+with open(CALIBRATION_PATH) as f:
+    CALIBRATION = json.load(f)
+HUMAN_EDGE = CALIBRATION["human_edge"]
+SPOOF_EDGE = CALIBRATION["spoof_edge"]
 
 
 def get_tts():
@@ -20,6 +44,59 @@ def get_tts():
         device = "cuda" if torch.cuda.is_available() else "cpu"
         _tts = TTS("tts_models/multilingual/multi-dataset/xtts_v2").to(device)
     return _tts
+
+
+def get_detector():
+    global _detector
+    if _detector is None:
+        import onnxruntime as ort
+        _detector = ort.InferenceSession(MODEL_PATH, providers=["CPUExecutionProvider"])
+    return _detector
+
+
+def spoof_probability(audio_path):
+    """Mean spoof probability over consecutive 4.04 s windows of the clip."""
+    import librosa
+
+    wav, _ = librosa.load(audio_path, sr=DETECTOR_SR, mono=True)
+    if wav.size == 0:
+        raise gr.Error("That audio file is empty.")
+    if wav.size < DETECTOR_SAMPLES:
+        # AASIST convention: tile the clip up to the fixed input width.
+        wav = np.tile(wav, int(np.ceil(DETECTOR_SAMPLES / wav.size)))
+
+    session = get_detector()
+    probs = []
+    for start in range(0, wav.size - DETECTOR_SAMPLES + 1, DETECTOR_SAMPLES):
+        window = wav[start:start + DETECTOR_SAMPLES].astype(np.float32)[None, :]
+        logits = session.run(["logits"], {"audio": window})[0][0]
+        exp = np.exp(logits - logits.max())
+        probs.append(float((exp / exp.sum())[0]))  # index 0 is the spoof class
+    return sum(probs) / len(probs), len(probs)
+
+
+def detect(audio_path):
+    if not audio_path:
+        raise gr.Error("Upload or record some audio to check first.")
+
+    spoof, windows = spoof_probability(audio_path)
+
+    if spoof >= SPOOF_EDGE:
+        verdict = "AI-GENERATED"
+    elif spoof < HUMAN_EDGE:
+        verdict = "HUMAN"
+    else:
+        verdict = "UNCERTAIN"
+
+    detail = (
+        f"**{verdict}** — spoof probability {spoof:.3f} over {windows} window(s) of 4.04 s.\n\n"
+        f"Thresholds: human below {HUMAN_EDGE:.3f}, AI at or above {SPOOF_EDGE:.3f}, "
+        f"anything between is declined as uncertain.\n\n"
+        f"Model `{CALIBRATION['model_version']}` — trained on {CALIBRATION['domain']}. "
+        f"On its validation split it accepted {CALIBRATION['genuine_accept_rate']:.1%} of genuine "
+        f"speech and falsely flagged {CALIBRATION['measured_fpr']:.1%} of it."
+    )
+    return {"AI-generated": spoof, "Human": 1.0 - spoof}, detail
 
 
 def clone(reference_audio, text, language):
@@ -35,30 +112,45 @@ def clone(reference_audio, text, language):
         language=language,
         file_path=out_path,
     )
-    return out_path, reference_audio
+    scores, detail = detect(out_path)
+    return out_path, reference_audio, scores, detail
 
-
-OUT_DIR = os.path.join(tempfile.gettempdir(), "xtts_out")
-os.makedirs(OUT_DIR, exist_ok=True)
 
 with gr.Blocks(title="XTTS Voice Cloning") as demo:
     gr.Markdown(
-        "# XTTS Voice Cloning\n"
-        "Give a short reference recording, type any text, and hear it in that voice.\n\n"
+        "# XTTS Voice Cloning & Detection\n"
+        "Clone a voice from a short reference clip, then check any recording for AI generation.\n\n"
         "**Only clone voices you have permission to use.**"
     )
 
-    with gr.Row():
-        with gr.Column():
-            ref = gr.Audio(label="Reference voice (6-30s)", sources=["upload", "microphone"], type="filepath")
-            txt = gr.Textbox(label="Text to speak", lines=4, placeholder="Type what the cloned voice should say...")
-            lang = gr.Dropdown(LANGUAGES, value="en", label="Language")
-            go = gr.Button("Clone voice", variant="primary")
-        with gr.Column():
-            out_clone = gr.Audio(label="Cloned voice (download via the ⤓ button)", type="filepath", interactive=False)
-            out_ref = gr.Audio(label="Original reference (download via the ⤓ button)", type="filepath", interactive=False)
+    with gr.Tab("Clone a voice"):
+        with gr.Row():
+            with gr.Column():
+                ref = gr.Audio(label="Reference voice (6-30s)", sources=["upload", "microphone"], type="filepath")
+                txt = gr.Textbox(label="Text to speak", lines=4, placeholder="Type what the cloned voice should say...")
+                lang = gr.Dropdown(LANGUAGES, value="en", label="Language")
+                go = gr.Button("Clone voice", variant="primary")
+            with gr.Column():
+                out_clone = gr.Audio(label="Cloned voice (download via the ⤓ button)", type="filepath", interactive=False)
+                out_ref = gr.Audio(label="Original reference (download via the ⤓ button)", type="filepath", interactive=False)
+                clone_scores = gr.Label(label="Detector verdict on the clone", num_top_classes=2)
+                clone_detail = gr.Markdown()
 
-    go.click(clone, [ref, txt, lang], [out_clone, out_ref])
+    with gr.Tab("Detect AI voice"):
+        gr.Markdown(
+            "Pass any recording — a real person or a clone — through the AASIST detector.\n"
+            "Clips longer than 4.04 seconds are scored in windows and averaged."
+        )
+        with gr.Row():
+            with gr.Column():
+                probe = gr.Audio(label="Audio to check", sources=["upload", "microphone"], type="filepath")
+                check = gr.Button("Check this audio", variant="primary")
+            with gr.Column():
+                probe_scores = gr.Label(label="Verdict", num_top_classes=2)
+                probe_detail = gr.Markdown()
+
+    go.click(clone, [ref, txt, lang], [out_clone, out_ref, clone_scores, clone_detail])
+    check.click(detect, [probe], [probe_scores, probe_detail])
 
 if __name__ == "__main__":
     demo.queue().launch(

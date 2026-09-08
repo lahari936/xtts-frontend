@@ -1,7 +1,31 @@
 # XTTS Voice Cloning UI
 
-Gradio app that clones a voice from a short reference clip using Coqui XTTS-v2.
-Both the generated audio and the reference audio are downloadable from the UI.
+Gradio app with two tabs:
+
+- **Clone a voice** - clone a voice from a short reference clip using Coqui
+  XTTS-v2. Both the generated audio and the reference audio are downloadable,
+  and the clone is scored by the detector automatically.
+- **Detect AI voice** - run any recording, real or cloned, through the AASIST
+  spoof detector in `artifacts/aasist_xtts.onnx`.
+
+## Detection
+
+The detector takes 16 kHz mono audio in fixed 64600-sample (4.04 s) windows;
+longer clips are scored window by window and averaged, shorter ones are tiled
+up to one window. Spoof probability is `softmax(logits)[0]`.
+
+Thresholds come from `artifacts/calibration_xtts.json` and are three-way:
+below `human_edge` (0.777) is HUMAN, at or above `spoof_edge` (0.924) is
+AI-GENERATED, and the band between is declined as UNCERTAIN rather than
+guessed. That gap is deliberate - the calibration trades a 20% miss rate for a
+2.9% rate of falsely accusing real speech.
+
+Measured on the 80 labelled clips in the source project: genuine clips score
+0.006 mean (max 0.030 Hindi, 0.926 on one English outlier), XTTS clips score
+0.986 mean (min 0.923). The model is an XTTS specialist trained on Hindi and
+Indian English - unseen generators are caught far less reliably.
+
+Override the paths with `DETECTOR_MODEL` and `DETECTOR_CALIBRATION`.
 
 ## Requirements
 

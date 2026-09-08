@@ -1,0 +1,17 @@
+{
+  "human_edge": 0.7768293023109436,
+  "spoof_edge": 0.923814880847931,
+  "separable": true,
+  "spoof_calibrated": true,
+  "model_version": "aasist_xtts",
+  "n_genuine": 276,
+  "n_spoof": 232,
+  "target_fpr": 0.08,
+  "target_fnr": 0.2,
+  "measured_fpr": 0.028985507246376812,
+  "measured_fnr": 0.2025862068965517,
+  "genuine_accept_rate": 0.9166666666666666,
+  "uncertain_rate_genuine": 0.05434782608695652,
+  "domain": "hindi+indian-english-xtts",
+  "notes": "XTTS specialist: genuine vs XTTS-v2 only, Hindi + Indian English"
+}
